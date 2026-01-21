@@ -106,7 +106,6 @@ class UpCT(nn.Module):
 
     def forward(self, x, imgs_1):
         x = self.up(x)
-        # print("x上采后", x.shape, imgs_1.shape)
         if x.shape[2:] != imgs_1.shape[2:]:
             x = F.interpolate(x, size=imgs_1.shape[2:], mode='bilinear', align_corners=False)
         x = torch.cat([x, imgs_1], dim=1)
@@ -124,10 +123,8 @@ class UpBl(nn.Module):
         self.conv_1 = DGConv(in_channels // 2 + mid_ch, out_channels // 2)
 
     def forward(self, x, guide, target_size):
-        # 打印target-size
         x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
         x = self.conv(x)
-        # print("x上采样后", x.shape[2:], guide.shape[2:])
         if x.shape[2:] != guide.shape[2:]:
             x = F.interpolate(x, size=guide.shape[2:], mode='bilinear', align_corners=False)
         x = torch.cat([x, guide], dim=1)
@@ -136,28 +133,27 @@ class UpBl(nn.Module):
 
 
 class UpPs(nn.Module):
-    """Upscaling using PixelShuffle then double DGConv.
+    """Upscaling using PixelShuffle then DGConv.
     """
 
     def __init__(self, in_channels, out_channels, scale=2, mid_ch=32):
         super().__init__()
         self.scale = scale
         out_ch = in_channels // 2
-        # 为 PixelShuffle 准备的中间通道数 = out_ch * (scale^2)
+
         pre_ch = out_ch * (scale * scale)
         self.up = nn.Sequential(
             nn.Conv2d(in_channels, pre_ch, kernel_size=1, bias=False),
             nn.BatchNorm2d(pre_ch),
             nn.ReLU(inplace=True),
-            nn.PixelShuffle(scale)  # 将 H,W 放大 scale 倍，同时通道数降为 pre_ch/scale**2 == out_ch
+            nn.PixelShuffle(scale)
         )
-        # 保留 DoubleConv 的原始设计：in_channels // 2 + 32
+
         self.conv_1 = DGConv(out_ch + mid_ch, out_channels // 2)
 
     def forward(self, x, imgs_1):
-        x = self.up(x)  # 上采样后通道为 in_channels // 2
-        # print("x上采样后", x.shape, imgs_1.shape)
-        # 尺寸对齐
+        x = self.up(x)
+
         if x.shape[2:] != imgs_1.shape[2:]:
             x = F.interpolate(x, size=imgs_1.shape[2:], mode='bilinear', align_corners=False)
         x = torch.cat([x, imgs_1], dim=1)  # concat, 与原设计一致
@@ -193,17 +189,13 @@ class EdgeUp(nn.Module):
         super(EdgeUp, self).__init__()
         self.down_scale = down_scale
 
-        # up1 的输入通道原本是 in_channels + 32 -> 保持不变
-        self.up1 = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)  # 转置风格
-        # self.up1 = UpPs(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)  # 插值风格
-        # self.up1 = UpBl(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)  # pxf风格
+        self.up = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)
+        # self.up = UpPs(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
+        # self.up = UpBl(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
 
-        # outc 保持原样
         self.outc = nn.Conv2d(in_channels // 2, in_channels, kernel_size=1)
-        # self.outc = StarBlock(in_channels // 2, in_channels)
-        # 通道分支 convs
+
         self.ch_nor = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
-        # 图像分支 convs
         if down_scale == 2:
             self.size_sync = nn.Identity()
         elif down_scale == 4:
@@ -232,23 +224,23 @@ class EdgeUp(nn.Module):
         )
 
     def forward(self, x):
-        imgs, x = x  # imgs: 原始图像张量，x: 上一层的特征
+        imgs, x = x
         imgs = self.ch_nor(imgs)
         imgs_1 = self.size_sync(imgs)
         imgs_2 = self.image_convs_2(imgs_1)
-        # print("x第一次拼接前-fa", x.shape, imgs_2.shape)
+
         if x.shape[2:] != imgs_2.shape[2:]:
             x = F.interpolate(x, size=imgs_2.shape[2:], mode='bilinear', align_corners=False)
-        # 将 x 和 imgs_2 拼接并上采样 + doubleconv（保持原设计）
+
         x = torch.cat([x, imgs_2], dim=1)
-        # x = self.up1(x, imgs, imgs.shape[2:])  # 插值风格
-        x = self.up1(x, imgs)  # PS风格
-        # x = self.up1(x, imgs)  # CT风格
+
+        # x = self.up(x, imgs_1, imgs_1.shape[2:])  # Bl
+        # x = self.up(x, imgs_1)  # PS
+        x = self.up(x, imgs_1)  # CT
+
         logits = self.outc(x)  # shape (B, in_channels, H, W)
         return logits
 
-
-# MaxPool2d改为卷积
 
 class EdgeUp2(nn.Module):
     """
@@ -259,16 +251,11 @@ class EdgeUp2(nn.Module):
         super(EdgeUp2, self).__init__()
         self.down_scale = down_scale
 
-        # up1 的输入通道原本是 in_channels + 32 -> 保持不变
-        self.up1 = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)  # 转置风格
-        # self.up1 = UpPs(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)  # 插值风格
-        # self.up1 = UpBl(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)  # pxf风格
-        # outc 保持原样
+        self.up = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)
+        # self.up = UpPs(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
+        # self.up = UpBl(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
         self.outc = nn.Conv2d(in_channels // 2, in_channels, kernel_size=1)
-        # self.outc = StarBlock(in_channels // 2, in_channels)
-        # 通道分支 convs
         self.ch_nor = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
-        # 图像分支 convs
         if down_scale == 2:
             self.scale_sync = nn.Identity()
         elif down_scale == 4:
@@ -282,7 +269,7 @@ class EdgeUp2(nn.Module):
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         elif down_scale == 32:
             self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            nn.MaxPool2d(2, 2),
+                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                             nn.MaxPool2d(2, 2),
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         else:
@@ -297,17 +284,17 @@ class EdgeUp2(nn.Module):
         )
 
     def forward(self, x):
-        imgs, x = x  # imgs: 原始图像张量，x: 上一层的特征
+        imgs, x = x
         imgs = self.ch_nor(imgs)
         imgs_1 = self.scale_sync(imgs)
         imgs_2 = self.image_convs_2(imgs_1)
-        # print("x第一次拼接前-td", x.shape, imgs_2.shape)
+
         if x.shape[2:] != imgs_2.shape[2:]:
             x = F.interpolate(x, size=imgs_2.shape[2:], mode='bilinear', align_corners=False)
-        # 将 x 和 imgs_2 拼接并上采样 + doubleconv（保持原设计）
+
         x = torch.cat([x, imgs_2], dim=1)
-        # x = self.up1(x, imgs_1, imgs_1.shape[2:])  # 插值风格
-        # x = self.up1(x, imgs_1)  # PS风格
-        x = self.up1(x, imgs_1)  # CT风格
+        # x = self.up(x, imgs_1, imgs_1.shape[2:])  # Bl
+        # x = self.up(x, imgs_1)  # PS
+        x = self.up(x, imgs_1)  # CT
         logits = self.outc(x)  # shape (B, in_channels, H, W)
         return logits
