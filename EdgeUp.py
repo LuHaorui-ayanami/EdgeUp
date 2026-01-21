@@ -114,7 +114,7 @@ class UpCT(nn.Module):
         return x
 
 
-# TODO 用Resize+Conv
+# 用Resize+Conv
 class UpBl(nn.Module):
     """Upscaling with bilinear then DGConv"""
 
@@ -248,7 +248,7 @@ class EdgeUp(nn.Module):
         return logits
 
 
-# TODO MaxPool2d改为卷积
+# MaxPool2d改为卷积
 
 class EdgeUp2(nn.Module):
     """
