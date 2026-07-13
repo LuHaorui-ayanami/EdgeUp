@@ -5,7 +5,9 @@ import math
 
 
 class DWConvTranspose2d(nn.ConvTranspose2d):
-    """Depth-wise transpose convolution."""
+    """
+    Depth-wise transpose convolution.
+    """
 
     def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):  # ch_in, ch_out, kernel, stride, padding, padding_out
         """Initialize DWConvTranspose2d class with given parameters."""
@@ -37,22 +39,26 @@ class ECA(nn.Module):
 
 
 class GhostConv(nn.Module):
-    """Ghost Convolution https://github.com/huawei-noah/ghostnet."""
+    """
+    Ghost Convolution
+    """
 
     def __init__(self, c1, c2, k=1, s=1, g=1, act=True):
         super().__init__()
-        c_ = c2 // 2  # hidden channels  # 降低通道至为1/4C
-        self.cv1 = CBS(c1, c_, kernel_size=k, padding=1, stride=s, group=g)  # c_= 1/4C
-        self.cv2 = CBS(c_, c_, kernel_size=5, padding=1, stride=1, group=c_)  # c_= 1/4C
+        c_ = c2 // 2  # hidden channels
+        self.cv1 = CBS(c1, c_, kernel_size=k, padding=1, stride=s, group=g)
+        self.cv2 = CBS(c_, c_, kernel_size=5, padding=1, stride=1, group=c_)
         # self.cv2 = Conv(c_, c_, 5, 1, None, c_, act=act)
 
     def forward(self, x):
         y = self.cv1(x)
-        return torch.cat((y, self.cv2(y)), 1)  # 拼接后为1/2C
+        return torch.cat((y, self.cv2(y)), 1)
 
 
 class DGConv(nn.Module):
-    """GhostConv * 2"""
+    """
+    GhostConv * 2
+    """
 
     def __init__(self, in_channels, out_channels):  # in_channels=1/2C+3/2m out_channels=1/2C
         super().__init__()
@@ -66,7 +72,9 @@ class DGConv(nn.Module):
 
 
 class UpCT(nn.Module):
-    """Upscaling with ConvTranspose2d then DGConv"""
+    """
+    Upscaling with ConvTranspose2d then DGConv.
+    """
 
     def __init__(self, in_channels, out_channels, k=2, s=2, scale=2, mid_ch=32):
         super().__init__()
@@ -85,7 +93,9 @@ class UpCT(nn.Module):
 
 # 用Resize+Conv
 class UpBl(nn.Module):
-    """Upscaling with bilinear then DGConv"""
+    """
+    Upscaling with bilinear then DGConv.
+    """
 
     def __init__(self, in_channels, out_channels, scale=2, mid_ch=32):
         super().__init__()
@@ -103,7 +113,8 @@ class UpBl(nn.Module):
 
 
 class UpPS(nn.Module):
-    """Upscaling using PixelShuffle then DGConv.
+    """
+    Upscaling using PixelShuffle then DGConv.
     """
 
     def __init__(self, in_channels, out_channels, scale=2, mid_ch=32):
@@ -133,9 +144,8 @@ class UpPS(nn.Module):
 
 class CBS(nn.Module):
     """
-    CBS
+    Conv2d + BatchNorm2d + SiLU
     """
-
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1, group=1):
         super(CBS, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, groups=group, bias=False)
@@ -165,46 +175,36 @@ class EdgeUp(nn.Module):
 
         self.outc = nn.Conv2d(in_channels // 2, in_channels, kernel_size=1)
 
-        self.ch_nor = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
-        if down_scale == 2:
-            self.size_sync = nn.Identity()
-        elif down_scale == 4:
-            self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 8:
-            self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 16:
-            self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 32:
-            self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
+        self.channel_reduce = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
+        
+        # Dynamic calculation of downsample layers using math.log2
+        if down_scale < 2 or (down_scale & (down_scale - 1)) != 0:
+            raise ValueError(f'down_scale must be a power of 2 and >= 2, got {down_scale}')
+        num_layers = int(math.log2(down_scale)) - 1
+        if num_layers == 0:
+            self.scale_sync = nn.Identity()
         else:
-            print('ERROR: patch size %i not currently supported ' % down_scale)
-            exit()
+            self.scale_sync = nn.Sequential(*[CBS(mid_ch, mid_ch, kernel_size=3, stride=2) for _ in range(num_layers)])
 
-        self.image_convs_2 = nn.Sequential(
+        self.final_guide = nn.Sequential(
             CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
             ECA(mid_ch)
         )
 
     def forward(self, x):
         imgs, x = x
-        imgs = self.ch_nor(imgs)
-        imgs_1 = self.size_sync(imgs)
-        imgs_2 = self.image_convs_2(imgs_1)
+        imgs = self.channel_reduce(imgs)
+        guide_F = self.scale_sync(imgs)
+        guide_f = self.final_guide(guide_F)
 
-        if x.shape[2:] != imgs_2.shape[2:]:
-            x = F.interpolate(x, size=imgs_2.shape[2:], mode='bilinear', align_corners=False)
+        if x.shape[2:] != guide_f.shape[2:]:
+            x = F.interpolate(x, size=guide_f.shape[2:], mode='bilinear', align_corners=False)
 
-        x = torch.cat([x, imgs_2], dim=1)
+        x = torch.cat([x, guide_f], dim=1)
 
-        # x = self.up(x, imgs_1, imgs_1.shape[2:])  # Bl
-        # x = self.up(x, imgs_1)  # PS
-        x = self.up(x, imgs_1)  # CT
+        # x = self.up(x, guide_F, guide_F.shape[2:])  # Bl
+        # x = self.up(x, guide_F)  # PS
+        x = self.up(x, guide_F)  # CT
 
         logits = self.outc(x)  # shape (B, in_channels, H, W)
         return logits
@@ -223,44 +223,34 @@ class EdgeUp2(nn.Module):
         # self.up = UpPs(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
         # self.up = UpBl(in_channels + mid_ch, in_channels, scale=scale, mid_ch=mid_ch)
         self.outc = nn.Conv2d(in_channels // 2, in_channels, kernel_size=1)
-        self.ch_nor = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
-        if down_scale == 2:
-            self.scale_sync = nn.Identity()
-        elif down_scale == 4:
-            self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 8:
-            self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 16:
-            self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        elif down_scale == 32:
-            self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
-        else:
-            print('ERROR: patch size %i not currently supported ' % down_scale)
-            exit()
+        self.channel_reduce = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
 
-        self.image_convs_2 = nn.Sequential(
+        # Dynamic calculation of downsample layers using math.log2
+        if down_scale < 2 or (down_scale & (down_scale - 1)) != 0:
+            raise ValueError(f'down_scale must be a power of 2 and >= 2, got {down_scale}')
+        num_layers = int(math.log2(down_scale)) - 1
+        if num_layers == 0:
+            self.scale_sync = nn.Identity()
+        else:
+            self.scale_sync = nn.Sequential(*[CBS(mid_ch, mid_ch, kernel_size=3, stride=2) for _ in range(num_layers)])
+
+        self.final_guide = nn.Sequential(
             CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
             ECA(mid_ch)
         )
 
     def forward(self, x):
         imgs, x = x
-        imgs = self.ch_nor(imgs)
-        imgs_1 = self.scale_sync(imgs)
-        imgs_2 = self.image_convs_2(imgs_1)
+        imgs = self.channel_reduce(imgs)
+        guide_F = self.scale_sync(imgs)
+        guide_f = self.final_guide(guide_F)
 
-        if x.shape[2:] != imgs_2.shape[2:]:
-            x = F.interpolate(x, size=imgs_2.shape[2:], mode='bilinear', align_corners=False)
+        if x.shape[2:] != guide_f.shape[2:]:
+            x = F.interpolate(x, size=guide_f.shape[2:], mode='bilinear', align_corners=False)
 
-        x = torch.cat([x, imgs_2], dim=1)
-        # x = self.up(x, imgs_1, imgs_1.shape[2:])  # Bl
-        # x = self.up(x, imgs_1)  # PS
-        x = self.up(x, imgs_1)  # CT
+        x = torch.cat([x, guide_f], dim=1)
+        # x = self.up(x, guide_F, guide_F.shape[2:])  # Bl
+        # x = self.up(x, guide_F)  # PS
+        x = self.up(x, guide_F)  # CT
         logits = self.outc(x)  # shape (B, in_channels, H, W)
         return logits
