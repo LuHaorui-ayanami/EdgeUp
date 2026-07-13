@@ -10,38 +10,7 @@ class DWConvTranspose2d(nn.ConvTranspose2d):
     def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):  # ch_in, ch_out, kernel, stride, padding, padding_out
         """Initialize DWConvTranspose2d class with given parameters."""
         super().__init__(c1, c2, k, s, p1, p2, groups=math.gcd(c1, c2))
-
-
-def autopad(k, p=None, d=1):  # kernel, padding, dilation
-    """Pad to 'same' shape outputs."""
-    if d > 1:
-        k = d * (k - 1) + 1 if isinstance(k, int) else [d * (x - 1) + 1 for x in k]  # actual kernel-size
-    if p is None:
-        p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
-    return p
-
-
-class Conv(nn.Module):
-    """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
-
-    default_act = nn.SiLU()  # default activation
-
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
-        """Initialize Conv layer with given arguments including activation."""
-        super().__init__()
-        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
-        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
-
-    def forward(self, x):
-        """Apply convolution, batch normalization and activation to input tensor."""
-        return self.act(self.bn(self.conv(x)))
-
-    def forward_fuse(self, x):
-        """Perform transposed convolution of 2D data."""
-        return self.act(self.conv(x))
-
-
+#
 class ECA(nn.Module):
     """
     GAP + DW Conv2d + Sigmoid
@@ -72,23 +41,24 @@ class GhostConv(nn.Module):
 
     def __init__(self, c1, c2, k=1, s=1, g=1, act=True):
         super().__init__()
-        c_ = c2 // 2  # hidden channels
-        self.cv1 = Conv(c1, c_, k, s, None, g, act=act)
-        self.cv2 = Conv(c_, c_, 5, 1, None, c_, act=act)
+        c_ = c2 // 2  # hidden channels  # 降低通道至为1/4C
+        self.cv1 = CBS(c1, c_, kernel_size=k, padding=1, stride=s, group=g)  # c_= 1/4C
+        self.cv2 = CBS(c_, c_, kernel_size=5, padding=1, stride=1, group=c_)  # c_= 1/4C
+        # self.cv2 = Conv(c_, c_, 5, 1, None, c_, act=act)
 
     def forward(self, x):
         y = self.cv1(x)
-        return torch.cat((y, self.cv2(y)), 1)
+        return torch.cat((y, self.cv2(y)), 1)  # 拼接后为1/2C
 
 
 class DGConv(nn.Module):
     """GhostConv * 2"""
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels):  # in_channels=1/2C+3/2m out_channels=1/2C
         super().__init__()
         self.dgconv = nn.Sequential(
-            GhostConv(in_channels, out_channels, 1, 1, 1, act=True),
-            GhostConv(out_channels, out_channels, 1, 1, 1, act=True)
+            GhostConv(in_channels, out_channels, 1, 1, 1, act=True),  # 输出1/2C
+            GhostConv(out_channels, out_channels, 1, 1, 1, act=True)  # 输出1/2C
         )
 
     def forward(self, x):
@@ -132,7 +102,7 @@ class UpBl(nn.Module):
         return x
 
 
-class UpPs(nn.Module):
+class UpPS(nn.Module):
     """Upscaling using PixelShuffle then DGConv.
     """
 
@@ -205,21 +175,19 @@ class EdgeUp(nn.Module):
                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         elif down_scale == 16:
             self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           nn.MaxPool2d(2, 2),
+                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         elif down_scale == 32:
             self.size_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                           nn.MaxPool2d(2, 2),
-                                           nn.MaxPool2d(2, 2),
+                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
+                                           CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         else:
             print('ERROR: patch size %i not currently supported ' % down_scale)
             exit()
 
         self.image_convs_2 = nn.Sequential(
-            nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1, stride=2),
-            nn.BatchNorm2d(mid_ch),
-            nn.ReLU(inplace=True),
+            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
             ECA(mid_ch)
         )
 
@@ -265,21 +233,19 @@ class EdgeUp2(nn.Module):
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         elif down_scale == 16:
             self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            nn.MaxPool2d(2, 2),
+                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         elif down_scale == 32:
             self.scale_sync = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-                                            nn.MaxPool2d(2, 2),
+                                            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
                                             CBS(mid_ch, mid_ch, kernel_size=3, stride=2))
         else:
             print('ERROR: patch size %i not currently supported ' % down_scale)
             exit()
 
         self.image_convs_2 = nn.Sequential(
-            nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1, stride=2),
-            nn.BatchNorm2d(mid_ch),
-            nn.ReLU(inplace=True),
+            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
             ECA(mid_ch)
         )
 
