@@ -1,32 +1,32 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
 class DWConvTranspose2d(nn.ConvTranspose2d):
-    """
-    Depth-wise transpose convolution.
-    """
+    """Depth-wise transpose convolution."""
 
     def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):  # ch_in, ch_out, kernel, stride, padding, padding_out
         """Initialize DWConvTranspose2d class with given parameters."""
         super().__init__(c1, c2, k, s, p1, p2, groups=math.gcd(c1, c2))
+
+
 #
 class ECA(nn.Module):
-    """
-    GAP + DW Conv2d + Sigmoid
-    """
+    """GAP + DW Conv2d + Sigmoid."""
 
     def __init__(self, c, k=3):
         super().__init__()
         self.avg = nn.AdaptiveAvgPool2d(1)
         self.conv = nn.Conv2d(
-            c, c,
+            c,
+            c,
             kernel_size=(1, k),
             padding=(0, k // 2),
             groups=c,  # depthwise
-            bias=False
+            bias=False,
         )
         self.sigmoid = nn.Sigmoid()
 
@@ -39,9 +39,7 @@ class ECA(nn.Module):
 
 
 class GhostConv(nn.Module):
-    """
-    Ghost Convolution
-    """
+    """Ghost Convolution."""
 
     def __init__(self, c1, c2, k=1, s=1, g=1, act=True):
         super().__init__()
@@ -56,15 +54,13 @@ class GhostConv(nn.Module):
 
 
 class DGConv(nn.Module):
-    """
-    GhostConv * 2
-    """
+    """GhostConv * 2."""
 
     def __init__(self, in_channels, out_channels):  # in_channels=1/2C+3/2m out_channels=1/2C
         super().__init__()
         self.dgconv = nn.Sequential(
             GhostConv(in_channels, out_channels, 1, 1, 1, act=True),  # 输出1/2C
-            GhostConv(out_channels, out_channels, 1, 1, 1, act=True)  # 输出1/2C
+            GhostConv(out_channels, out_channels, 1, 1, 1, act=True),  # 输出1/2C
         )
 
     def forward(self, x):
@@ -72,9 +68,7 @@ class DGConv(nn.Module):
 
 
 class UpCT(nn.Module):
-    """
-    Upscaling with ConvTranspose2d then DGConv.
-    """
+    """Upscaling with ConvTranspose2d then DGConv."""
 
     def __init__(self, in_channels, out_channels, k=2, s=2, scale=2, mid_ch=32):
         super().__init__()
@@ -85,7 +79,7 @@ class UpCT(nn.Module):
     def forward(self, x, imgs_1):
         x = self.up(x)
         if x.shape[2:] != imgs_1.shape[2:]:
-            x = F.interpolate(x, size=imgs_1.shape[2:], mode='bilinear', align_corners=False)
+            x = F.interpolate(x, size=imgs_1.shape[2:], mode="bilinear", align_corners=False)
         x = torch.cat([x, imgs_1], dim=1)
         x = self.conv_1(x)
         return x
@@ -93,9 +87,7 @@ class UpCT(nn.Module):
 
 # 用Resize+Conv
 class UpBl(nn.Module):
-    """
-    Upscaling with bilinear then DGConv.
-    """
+    """Upscaling with bilinear then DGConv."""
 
     def __init__(self, in_channels, out_channels, scale=2, mid_ch=32):
         super().__init__()
@@ -103,19 +95,17 @@ class UpBl(nn.Module):
         self.conv_1 = DGConv(in_channels // 2 + mid_ch, out_channels // 2)
 
     def forward(self, x, guide, target_size):
-        x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
+        x = F.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
         x = self.conv(x)
         if x.shape[2:] != guide.shape[2:]:
-            x = F.interpolate(x, size=guide.shape[2:], mode='bilinear', align_corners=False)
+            x = F.interpolate(x, size=guide.shape[2:], mode="bilinear", align_corners=False)
         x = torch.cat([x, guide], dim=1)
         x = self.conv_1(x)
         return x
 
 
 class UpPS(nn.Module):
-    """
-    Upscaling using PixelShuffle then DGConv.
-    """
+    """Upscaling using PixelShuffle then DGConv."""
 
     def __init__(self, in_channels, out_channels, scale=2, mid_ch=32):
         super().__init__()
@@ -127,7 +117,7 @@ class UpPS(nn.Module):
             nn.Conv2d(in_channels, pre_ch, kernel_size=1, bias=False),
             nn.BatchNorm2d(pre_ch),
             nn.ReLU(inplace=True),
-            nn.PixelShuffle(scale)
+            nn.PixelShuffle(scale),
         )
 
         self.conv_1 = DGConv(out_ch + mid_ch, out_channels // 2)
@@ -136,18 +126,17 @@ class UpPS(nn.Module):
         x = self.up(x)
 
         if x.shape[2:] != imgs_1.shape[2:]:
-            x = F.interpolate(x, size=imgs_1.shape[2:], mode='bilinear', align_corners=False)
+            x = F.interpolate(x, size=imgs_1.shape[2:], mode="bilinear", align_corners=False)
         x = torch.cat([x, imgs_1], dim=1)  # concat, 与原设计一致
         x = self.conv_1(x)
         return x
 
 
 class CBS(nn.Module):
-    """
-    Conv2d + BatchNorm2d + SiLU
-    """
+    """Conv2d + BatchNorm2d + SiLU."""
+
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1, group=1):
-        super(CBS, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, groups=group, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
         # self.relu = nn.ReLU(inplace=True)
@@ -161,12 +150,10 @@ class CBS(nn.Module):
 
 
 class EdgeUp(nn.Module):
-    """
-    UpSample to imgs.shape[2:]
-    """
+    """UpSample to imgs.shape[2:]."""
 
     def __init__(self, in_channels, in_ch_img, down_scale, upk=2, ups=2, scale: int = 2, mid_ch=32):
-        super(EdgeUp, self).__init__()
+        super().__init__()
         self.down_scale = down_scale
 
         self.up = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)
@@ -176,20 +163,17 @@ class EdgeUp(nn.Module):
         self.outc = nn.Conv2d(in_channels // 2, in_channels, kernel_size=1)
 
         self.channel_reduce = CBS(in_ch_img, mid_ch, kernel_size=1, stride=1)
-        
+
         # Dynamic calculation of downsample layers using math.log2
         if down_scale < 2 or (down_scale & (down_scale - 1)) != 0:
-            raise ValueError(f'down_scale must be a power of 2 and >= 2, got {down_scale}')
+            raise ValueError(f"down_scale must be a power of 2 and >= 2, got {down_scale}")
         num_layers = int(math.log2(down_scale)) - 1
         if num_layers == 0:
             self.scale_sync = nn.Identity()
         else:
             self.scale_sync = nn.Sequential(*[CBS(mid_ch, mid_ch, kernel_size=3, stride=2) for _ in range(num_layers)])
 
-        self.final_guide = nn.Sequential(
-            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-            ECA(mid_ch)
-        )
+        self.final_guide = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2), ECA(mid_ch))
 
     def forward(self, x):
         imgs, x = x
@@ -198,7 +182,7 @@ class EdgeUp(nn.Module):
         guide_f = self.final_guide(guide_F)
 
         if x.shape[2:] != guide_f.shape[2:]:
-            x = F.interpolate(x, size=guide_f.shape[2:], mode='bilinear', align_corners=False)
+            x = F.interpolate(x, size=guide_f.shape[2:], mode="bilinear", align_corners=False)
 
         x = torch.cat([x, guide_f], dim=1)
 
@@ -211,12 +195,10 @@ class EdgeUp(nn.Module):
 
 
 class EdgeUp2(nn.Module):
-    """
-        2*UpSample
-    """
+    """2*UpSample."""
 
     def __init__(self, in_channels, in_ch_img, down_scale, upk=2, ups=2, scale: int = 2, mid_ch=32):
-        super(EdgeUp2, self).__init__()
+        super().__init__()
         self.down_scale = down_scale
 
         self.up = UpCT(in_channels + mid_ch, in_channels, k=upk, s=ups, mid_ch=mid_ch)
@@ -227,17 +209,14 @@ class EdgeUp2(nn.Module):
 
         # Dynamic calculation of downsample layers using math.log2
         if down_scale < 2 or (down_scale & (down_scale - 1)) != 0:
-            raise ValueError(f'down_scale must be a power of 2 and >= 2, got {down_scale}')
+            raise ValueError(f"down_scale must be a power of 2 and >= 2, got {down_scale}")
         num_layers = int(math.log2(down_scale)) - 1
         if num_layers == 0:
             self.scale_sync = nn.Identity()
         else:
             self.scale_sync = nn.Sequential(*[CBS(mid_ch, mid_ch, kernel_size=3, stride=2) for _ in range(num_layers)])
 
-        self.final_guide = nn.Sequential(
-            CBS(mid_ch, mid_ch, kernel_size=3, stride=2),
-            ECA(mid_ch)
-        )
+        self.final_guide = nn.Sequential(CBS(mid_ch, mid_ch, kernel_size=3, stride=2), ECA(mid_ch))
 
     def forward(self, x):
         imgs, x = x
@@ -246,7 +225,7 @@ class EdgeUp2(nn.Module):
         guide_f = self.final_guide(guide_F)
 
         if x.shape[2:] != guide_f.shape[2:]:
-            x = F.interpolate(x, size=guide_f.shape[2:], mode='bilinear', align_corners=False)
+            x = F.interpolate(x, size=guide_f.shape[2:], mode="bilinear", align_corners=False)
 
         x = torch.cat([x, guide_f], dim=1)
         # x = self.up(x, guide_F, guide_F.shape[2:])  # Bl
