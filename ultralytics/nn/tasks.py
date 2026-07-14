@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from edgeup_code.EdgeUp import EdgeUp
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
     AIFI,
@@ -1682,6 +1683,12 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [c1, c2, *args[1:]]
+        elif m is EdgeUp:
+            img_feat, token_feat = f
+            in_c = ch[token_feat]
+            in_c2 = ch[img_feat]
+            down_scale = args[0]
+            args = [in_c, in_c2, down_scale]
         elif m is CBFuse:
             c2 = ch[f[-1]]
         elif m in frozenset({TorchVision, Index}):
